@@ -74,6 +74,7 @@ test("continue is not exposed as a user-facing command", () => {
   const commandFiles = fs.readdirSync(path.join(PLUGIN_ROOT, "commands")).sort();
   assert.deepEqual(commandFiles, [
     "adversarial-review.md",
+    "ask.md",
     "cancel.md",
     "rescue.md",
     "result.md",
@@ -81,6 +82,23 @@ test("continue is not exposed as a user-facing command", () => {
     "setup.md",
     "status.md"
   ]);
+});
+
+test("ask command is exposed as a deterministic read-only text entrypoint", () => {
+  const ask = read("commands/ask.md");
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+
+  assert.match(ask, /disable-model-invocation:\s*true/);
+  assert.match(ask, /allowed-tools:\s*Bash\(node:\*\)/);
+  assert.match(ask, /\[--wait\|--background\]/);
+  assert.match(ask, /\[--prompt-file <path>\]/);
+  assert.match(ask, /--model <model\|spark>/);
+  assert.match(ask, /--effort <none\|minimal\|low\|medium\|high\|xhigh>/);
+  assert.match(ask, /codex-companion\.mjs" ask \$ARGUMENTS/);
+  assert.match(ask, /Do not summarize or condense it/i);
+  assert.match(readme, /### `\/codex:ask`/);
+  assert.match(readme, /send arbitrary text or prompts to Codex/i);
+  assert.match(readme, /\/codex:ask --prompt-file docs\/incident\.md/);
 });
 
 test("rescue command absorbs continue semantics", () => {

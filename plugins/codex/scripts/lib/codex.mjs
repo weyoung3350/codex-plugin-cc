@@ -41,6 +41,7 @@ import { binaryAvailable } from "./process.mjs";
 
 const SERVICE_NAME = "claude_code_codex_plugin";
 const TASK_THREAD_PREFIX = "Codex Companion Task";
+const ASK_THREAD_PREFIX = "Codex Companion Ask";
 const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 
@@ -98,9 +99,17 @@ function looksLikeVerificationCommand(command) {
   );
 }
 
-function buildTaskThreadName(prompt) {
+function buildThreadName(prefix, prompt) {
   const excerpt = shorten(prompt, 56);
-  return excerpt ? `${TASK_THREAD_PREFIX}: ${excerpt}` : TASK_THREAD_PREFIX;
+  return excerpt ? `${prefix}: ${excerpt}` : prefix;
+}
+
+function buildTaskThreadName(prompt) {
+  return buildThreadName(TASK_THREAD_PREFIX, prompt);
+}
+
+function buildAskThreadName(prompt) {
+  return buildThreadName(ASK_THREAD_PREFIX, prompt);
 }
 
 function extractThreadId(message) {
@@ -1052,6 +1061,10 @@ export async function findLatestTaskThread(cwd) {
 
 export function buildPersistentTaskThreadName(prompt) {
   return buildTaskThreadName(prompt);
+}
+
+export function buildPersistentAskThreadName(prompt) {
+  return buildAskThreadName(prompt);
 }
 
 export function parseStructuredOutput(rawOutput, fallback = {}) {

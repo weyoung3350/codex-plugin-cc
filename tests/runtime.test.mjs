@@ -28,6 +28,14 @@ async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
   throw new Error("Timed out waiting for condition.");
 }
 
+function readJsonFileOrNull(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 test("setup reports ready when fake codex is installed and authenticated", () => {
   const binDir = makeTempDir();
   installFakeCodex(binDir);
@@ -209,6 +217,30 @@ test("task reports the actual Codex auth error when the run is rejected", () => 
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /authentication expired; run codex login/);
+});
+
+test("ask sends arbitrary prompt text to Codex from a prompt file", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const promptFile = path.join(repo, "prompt.txt");
+  fs.writeFileSync(promptFile, "First line.\nSecond line.\n", "utf8");
+
+  const result = run("node", [SCRIPT, "ask", "--prompt-file", promptFile], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Handled the requested task.\nTask prompt accepted.\n");
+  const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fakeState.lastTurnStart.prompt, "First line.\nSecond line.");
 });
 
 test("review accepts the quoted raw argument style for built-in base-branch review", () => {
@@ -831,6 +863,57 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.equal(resultPayload.job.id, launchPayload.jobId);
   assert.equal(resultPayload.job.status, "completed");
   assert.match(resultPayload.storedJob.rendered, /Handled the requested task/);
+});
+
+test("ask --background enqueues an ask-specific job and keeps the kind label", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "slow-task");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const launched = run("node", [SCRIPT, "ask", "--background", "--json", "summarize this design note"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(launched.status, 0, launched.stderr);
+  const launchPayload = JSON.parse(launched.stdout);
+  assert.equal(launchPayload.status, "queued");
+  assert.match(launchPayload.jobId, /^ask-/);
+
+  const waitedStatus = run(
+    "node",
+    [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
+    {
+      cwd: repo,
+      env: buildEnv(binDir)
+    }
+  );
+
+  assert.equal(waitedStatus.status, 0, waitedStatus.stderr);
+  const waitedPayload = JSON.parse(waitedStatus.stdout);
+  assert.equal(waitedPayload.job.id, launchPayload.jobId);
+  assert.equal(waitedPayload.job.status, "completed");
+  assert.equal(waitedPayload.job.kindLabel, "ask");
+  assert.equal(waitedPayload.job.title, "Codex Ask");
+
+  const resultPayload = await waitFor(() => {
+    const result = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
+      cwd: repo,
+      env: buildEnv(binDir)
+    });
+    if (result.status !== 0) {
+      return null;
+    }
+    return JSON.parse(result.stdout);
+  });
+
+  assert.equal(resultPayload.job.id, launchPayload.jobId);
+  assert.equal(resultPayload.job.kindLabel, "ask");
+  assert.equal(resultPayload.job.status, "completed");
 });
 
 test("review rejects focus text because it is native-review only", () => {
@@ -1624,7 +1707,10 @@ test("cancel sends turn interrupt to the shared app-server before killing a brok
 
   const stateDir = resolveStateDir(repo);
   const runningJob = await waitFor(() => {
-    const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
+    const state = readJsonFileOrNull(path.join(stateDir, "state.json"));
+    if (!state) {
+      return null;
+    }
     const job = state.jobs.find((candidate) => candidate.id === jobId);
     if (job?.status === "running" && job.threadId && job.turnId) {
       return job;
@@ -1644,7 +1730,10 @@ test("cancel sends turn interrupt to the shared app-server before killing a brok
   assert.equal(cancelPayload.turnInterrupted, true);
 
   await waitFor(() => {
-    const fakeState = JSON.parse(fs.readFileSync(fakeStatePath, "utf8"));
+    const fakeState = readJsonFileOrNull(fakeStatePath);
+    if (!fakeState) {
+      return null;
+    }
     return fakeState.lastInterrupt ?? null;
   });
 

@@ -11,6 +11,7 @@ they already have.
 
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
+- `/codex:ask` to send arbitrary text or prompts to Codex without a review target
 - `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
 
 ## Requirements
@@ -122,6 +123,28 @@ Examples:
 ```
 
 This command is read-only. It does not fix code.
+
+### `/codex:ask`
+
+Sends arbitrary text to Codex without requiring a code review target.
+
+Use it when you want Codex to:
+
+- explain or critique a design note, incident write-up, or proposal
+- summarize or challenge a block of text
+- answer a repo-related question where you want Codex's take but do not want to hand off an edit task
+
+It supports `--wait`, `--background`, `--prompt-file`, `--model`, and `--effort`.
+
+Examples:
+
+```bash
+/codex:ask summarize this rollout note and call out the highest-risk assumption
+/codex:ask --prompt-file docs/incident.md
+/codex:ask --background --model gpt-5.4-mini challenge the tradeoffs in this migration plan
+```
+
+This command is read-only. It will not make changes to your repository.
 
 ### `/codex:rescue`
 
@@ -235,10 +258,17 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 /codex:rescue investigate why the build is failing in CI
 ```
 
+### Send Text To Codex
+
+```bash
+/codex:ask --prompt-file docs/plan.md
+```
+
 ### Start Something Long-Running
 
 ```bash
 /codex:adversarial-review --background
+/codex:ask --background summarize this long incident report
 /codex:rescue --background investigate the flaky test
 ```
 

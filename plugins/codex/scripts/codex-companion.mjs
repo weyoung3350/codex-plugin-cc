@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import {
+    buildPersistentAskThreadName,
     buildPersistentTaskThreadName,
     DEFAULT_CONTINUE_PROMPT,
     findLatestTaskThread,
@@ -77,6 +78,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
+      "  node scripts/codex-companion.mjs ask [--wait|--background] [--prompt-file <path>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -550,13 +552,26 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
   };
 }
 
+function buildAskRunMetadata(prompt) {
+  return {
+    title: "Codex Ask",
+    summary: shorten(prompt || "Ask Codex")
+  };
+}
+
 function renderQueuedTaskLaunch(payload) {
   return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\n`;
 }
 
 function getJobKindLabel(kind, jobClass) {
+  if (kind === "ask") {
+    return "ask";
+  }
   if (kind === "adversarial-review") {
     return "adversarial-review";
+  }
+  if (jobClass === "ask") {
+    return "ask";
   }
   return jobClass === "review" ? "review" : "rescue";
 }
@@ -598,6 +613,18 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
+function buildAskJob(workspaceRoot, askMetadata) {
+  return createCompanionJob({
+    prefix: "ask",
+    kind: "ask",
+    title: askMetadata.title,
+    workspaceRoot,
+    jobClass: "ask",
+    summary: askMetadata.summary,
+    write: false
+  });
+}
+
 function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
   return {
     cwd,
@@ -606,6 +633,16 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     prompt,
     write,
     resumeLast,
+    jobId
+  };
+}
+
+function buildAskRequest({ cwd, model, effort, prompt, jobId }) {
+  return {
+    cwd,
+    model,
+    effort,
+    prompt,
     jobId
   };
 }
@@ -625,6 +662,12 @@ function requireTaskRequest(prompt, resumeLast) {
   }
 }
 
+function requirePrompt(prompt) {
+  if (!prompt) {
+    throw new Error("Provide a prompt, a prompt file, or piped stdin.");
+  }
+}
+
 async function runForegroundCommand(job, runner, options = {}) {
   const { logFile, progress } = createTrackedProgress(job, {
     logFile: options.logFile,
@@ -638,9 +681,9 @@ async function runForegroundCommand(job, runner, options = {}) {
   return execution;
 }
 
-function spawnDetachedTaskWorker(cwd, jobId) {
+function spawnDetachedWorker(cwd, workerSubcommand, jobId) {
   const scriptPath = path.join(ROOT_DIR, "scripts", "codex-companion.mjs");
-  const child = spawn(process.execPath, [scriptPath, "task-worker", "--cwd", cwd, "--job-id", jobId], {
+  const child = spawn(process.execPath, [scriptPath, workerSubcommand, "--cwd", cwd, "--job-id", jobId], {
     cwd,
     env: process.env,
     detached: true,
@@ -651,11 +694,11 @@ function spawnDetachedTaskWorker(cwd, jobId) {
   return child;
 }
 
-function enqueueBackgroundTask(cwd, job, request) {
+function enqueueBackgroundJob(cwd, workerSubcommand, job, request) {
   const { logFile } = createTrackedProgress(job);
   appendLogLine(logFile, "Queued for background execution.");
 
-  const child = spawnDetachedTaskWorker(cwd, job.id);
+  const child = spawnDetachedWorker(cwd, workerSubcommand, job.id);
   const queuedRecord = {
     ...job,
     status: "queued",
@@ -769,7 +812,7 @@ async function handleTask(argv) {
       resumeLast,
       jobId: job.id
     });
-    const { payload } = enqueueBackgroundTask(cwd, job, request);
+    const { payload } = enqueueBackgroundJob(cwd, "task-worker", job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
     return;
   }
@@ -785,6 +828,110 @@ async function handleTask(argv) {
         prompt,
         write,
         resumeLast,
+        jobId: job.id,
+        onProgress: progress
+      }),
+    { json: options.json }
+  );
+}
+
+async function executeAskRun(request) {
+  const workspaceRoot = resolveWorkspaceRoot(request.cwd);
+  ensureCodexAvailable(request.cwd);
+
+  if (!request.prompt) {
+    throw new Error("Provide a prompt, a prompt file, or piped stdin.");
+  }
+
+  const askMetadata = buildAskRunMetadata(request.prompt);
+  const result = await runAppServerTurn(workspaceRoot, {
+    prompt: request.prompt,
+    model: request.model,
+    effort: request.effort,
+    sandbox: "read-only",
+    onProgress: request.onProgress,
+    persistThread: true,
+    threadName: buildPersistentAskThreadName(request.prompt)
+  });
+
+  const rawOutput = typeof result.finalMessage === "string" ? result.finalMessage : "";
+  const failureMessage = result.error?.message ?? result.stderr ?? "";
+  const rendered = renderTaskResult(
+    {
+      rawOutput,
+      failureMessage,
+      reasoningSummary: result.reasoningSummary
+    },
+    {
+      title: askMetadata.title,
+      jobId: request.jobId ?? null,
+      write: false
+    }
+  );
+  const payload = {
+    status: result.status,
+    threadId: result.threadId,
+    rawOutput,
+    touchedFiles: result.touchedFiles,
+    reasoningSummary: result.reasoningSummary
+  };
+
+  return {
+    exitStatus: result.status,
+    threadId: result.threadId,
+    turnId: result.turnId,
+    payload,
+    rendered,
+    summary: firstMeaningfulLine(rawOutput, firstMeaningfulLine(failureMessage, `${askMetadata.title} finished.`)),
+    jobTitle: askMetadata.title,
+    jobClass: "ask",
+    write: false
+  };
+}
+
+async function handleAsk(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["model", "effort", "cwd", "prompt-file"],
+    booleanOptions: ["json", "background", "wait"],
+    aliasMap: {
+      m: "model"
+    }
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const model = normalizeRequestedModel(options.model);
+  const effort = normalizeReasoningEffort(options.effort);
+  const prompt = readTaskPrompt(cwd, options, positionals);
+  const askMetadata = buildAskRunMetadata(prompt);
+
+  if (options.background) {
+    ensureCodexAvailable(cwd);
+    requirePrompt(prompt);
+
+    const job = buildAskJob(workspaceRoot, askMetadata);
+    const request = buildAskRequest({
+      cwd,
+      model,
+      effort,
+      prompt,
+      jobId: job.id
+    });
+    const { payload } = enqueueBackgroundJob(cwd, "ask-worker", job, request);
+    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    return;
+  }
+
+  requirePrompt(prompt);
+  const job = buildAskJob(workspaceRoot, askMetadata);
+  await runForegroundCommand(
+    job,
+    (progress) =>
+      executeAskRun({
+        cwd,
+        model,
+        effort,
+        prompt,
         jobId: job.id,
         onProgress: progress
       }),
@@ -830,6 +977,51 @@ async function handleTaskWorker(argv) {
     },
     () =>
       executeTaskRun({
+        ...request,
+        onProgress: progress
+      }),
+    { logFile }
+  );
+}
+
+async function handleAskWorker(argv) {
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "job-id"]
+  });
+
+  if (!options["job-id"]) {
+    throw new Error("Missing required --job-id for ask-worker.");
+  }
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const storedJob = readStoredJob(workspaceRoot, options["job-id"]);
+  if (!storedJob) {
+    throw new Error(`No stored job found for ${options["job-id"]}.`);
+  }
+
+  const request = storedJob.request;
+  if (!request || typeof request !== "object") {
+    throw new Error(`Stored job ${options["job-id"]} is missing its ask request payload.`);
+  }
+
+  const { logFile, progress } = createTrackedProgress(
+    {
+      ...storedJob,
+      workspaceRoot
+    },
+    {
+      logFile: storedJob.logFile ?? null
+    }
+  );
+  await runTrackedJob(
+    {
+      ...storedJob,
+      workspaceRoot,
+      logFile
+    },
+    () =>
+      executeAskRun({
         ...request,
         onProgress: progress
       }),
@@ -997,8 +1189,14 @@ async function main() {
         reviewName: "Adversarial Review"
       });
       break;
+    case "ask":
+      await handleAsk(argv);
+      break;
     case "task":
       await handleTask(argv);
+      break;
+    case "ask-worker":
+      await handleAskWorker(argv);
       break;
     case "task-worker":
       await handleTaskWorker(argv);

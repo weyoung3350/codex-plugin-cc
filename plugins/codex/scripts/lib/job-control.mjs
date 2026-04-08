@@ -28,11 +28,17 @@ function getJobTypeLabel(job) {
   if (typeof job.kindLabel === "string" && job.kindLabel) {
     return job.kindLabel;
   }
+  if (job.kind === "ask") {
+    return "ask";
+  }
   if (job.kind === "adversarial-review") {
     return "adversarial-review";
   }
   if (job.jobClass === "review") {
     return "review";
+  }
+  if (job.jobClass === "ask") {
+    return "ask";
   }
   if (job.jobClass === "task") {
     return "rescue";
