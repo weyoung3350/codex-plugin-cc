@@ -12,6 +12,7 @@ they already have.
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
 - `/codex:ask` to send arbitrary text or prompts to Codex without a review target
+- `/codex:ask-file` to send the contents of a file to Codex with an optional question
 - `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
 
 ## Requirements
@@ -146,6 +147,28 @@ Examples:
 
 This command is read-only. It will not make changes to your repository.
 
+### `/codex:ask-file`
+
+Reads a file and sends its contents to Codex, with an optional question after the path.
+
+Use it when you want Codex to:
+
+- summarize a long design doc, log, or incident report
+- answer a question about one local file without manually pasting it
+- challenge a plan or spec based on the full file contents
+
+It supports `--wait`, `--background`, `--model`, and `--effort`.
+
+Examples:
+
+```bash
+/codex:ask-file docs/incident.md
+/codex:ask-file docs/plan.md challenge the rollback assumptions
+/codex:ask-file --background logs/error.log identify the likely root cause
+```
+
+This command is read-only. It will not make changes to your repository.
+
 ### `/codex:rescue`
 
 Hands a task to Codex through the `codex:codex-rescue` subagent.
@@ -262,6 +285,7 @@ When the review gate is enabled, the plugin uses a `Stop` hook to run a targeted
 
 ```bash
 /codex:ask --prompt-file docs/plan.md
+/codex:ask-file docs/plan.md
 ```
 
 ### Start Something Long-Running

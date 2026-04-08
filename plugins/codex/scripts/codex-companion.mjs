@@ -79,6 +79,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs ask [--wait|--background] [--prompt-file <path>] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs ask-file [--wait|--background] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] <path> [question]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -559,11 +560,22 @@ function buildAskRunMetadata(prompt) {
   };
 }
 
+function buildAskFileRunMetadata(filePath, question = "") {
+  const suffix = question ? `: ${question}` : "";
+  return {
+    title: "Codex Ask File",
+    summary: shorten(`${filePath}${suffix}` || "Ask Codex about a file")
+  };
+}
+
 function renderQueuedTaskLaunch(payload) {
   return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\n`;
 }
 
 function getJobKindLabel(kind, jobClass) {
+  if (kind === "ask-file") {
+    return "ask-file";
+  }
   if (kind === "ask") {
     return "ask";
   }
@@ -625,6 +637,18 @@ function buildAskJob(workspaceRoot, askMetadata) {
   });
 }
 
+function buildAskFileJob(workspaceRoot, askMetadata) {
+  return createCompanionJob({
+    prefix: "askf",
+    kind: "ask-file",
+    title: askMetadata.title,
+    workspaceRoot,
+    jobClass: "ask",
+    summary: askMetadata.summary,
+    write: false
+  });
+}
+
 function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
   return {
     cwd,
@@ -647,6 +671,18 @@ function buildAskRequest({ cwd, model, effort, prompt, jobId }) {
   };
 }
 
+function buildAskFileRequest({ cwd, model, effort, prompt, filePath, question, jobId }) {
+  return {
+    cwd,
+    model,
+    effort,
+    prompt,
+    filePath,
+    question,
+    jobId
+  };
+}
+
 function readTaskPrompt(cwd, options, positionals) {
   if (options["prompt-file"]) {
     return fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8");
@@ -654,6 +690,36 @@ function readTaskPrompt(cwd, options, positionals) {
 
   const positionalPrompt = positionals.join(" ");
   return positionalPrompt || readStdinIfPiped();
+}
+
+function resolveAskFileInput(cwd, positionals) {
+  const [rawFilePath, ...questionParts] = positionals;
+  if (!rawFilePath) {
+    throw new Error("Provide a file path followed by an optional question.");
+  }
+
+  const resolvedPath = path.resolve(cwd, rawFilePath);
+  const fileContent = fs.readFileSync(resolvedPath, "utf8");
+  const question = questionParts.join(" ").trim();
+  const relativePath = path.relative(cwd, resolvedPath) || path.basename(resolvedPath);
+  const defaultQuestion = "Summarize this file and call out the most important points.";
+  const prompt = [
+    "<task>",
+    "Use the file content below as the primary input.",
+    `File: ${relativePath}`,
+    `Question: ${question || defaultQuestion}`,
+    "</task>",
+    "",
+    "<file_content>",
+    fileContent,
+    "</file_content>"
+  ].join("\n");
+
+  return {
+    prompt,
+    filePath: relativePath,
+    question
+  };
 }
 
 function requireTaskRequest(prompt, resumeLast) {
@@ -939,6 +1005,56 @@ async function handleAsk(argv) {
   );
 }
 
+async function handleAskFile(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["model", "effort", "cwd"],
+    booleanOptions: ["json", "background", "wait"],
+    aliasMap: {
+      m: "model"
+    }
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const model = normalizeRequestedModel(options.model);
+  const effort = normalizeReasoningEffort(options.effort);
+  const askFileInput = resolveAskFileInput(cwd, positionals);
+  const askMetadata = buildAskFileRunMetadata(askFileInput.filePath, askFileInput.question);
+
+  if (options.background) {
+    ensureCodexAvailable(cwd);
+
+    const job = buildAskFileJob(workspaceRoot, askMetadata);
+    const request = buildAskFileRequest({
+      cwd,
+      model,
+      effort,
+      prompt: askFileInput.prompt,
+      filePath: askFileInput.filePath,
+      question: askFileInput.question,
+      jobId: job.id
+    });
+    const { payload } = enqueueBackgroundJob(cwd, "ask-worker", job, request);
+    outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
+    return;
+  }
+
+  const job = buildAskFileJob(workspaceRoot, askMetadata);
+  await runForegroundCommand(
+    job,
+    (progress) =>
+      executeAskRun({
+        cwd,
+        model,
+        effort,
+        prompt: askFileInput.prompt,
+        jobId: job.id,
+        onProgress: progress
+      }),
+    { json: options.json }
+  );
+}
+
 async function handleTaskWorker(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd", "job-id"]
@@ -1191,6 +1307,9 @@ async function main() {
       break;
     case "ask":
       await handleAsk(argv);
+      break;
+    case "ask-file":
+      await handleAskFile(argv);
       break;
     case "task":
       await handleTask(argv);

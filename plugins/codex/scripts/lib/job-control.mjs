@@ -28,6 +28,9 @@ function getJobTypeLabel(job) {
   if (typeof job.kindLabel === "string" && job.kindLabel) {
     return job.kindLabel;
   }
+  if (job.kind === "ask-file") {
+    return "ask-file";
+  }
   if (job.kind === "ask") {
     return "ask";
   }
